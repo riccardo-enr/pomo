@@ -57,8 +57,8 @@ impl Journal {
         ended: SystemTime,
         planned: Duration,
         completed: bool,
-    ) {
-        let Some(path) = self.path.as_ref() else { return };
+    ) -> bool {
+        let Some(path) = self.path.as_ref() else { return false };
         let entry = Entry {
             started_at: format_rfc3339(started),
             ended_at: format_rfc3339(ended),
@@ -67,13 +67,17 @@ impl Journal {
             planned_secs: planned.as_secs(),
             completed,
         };
-        if let Err(e) = append_entry(path, &entry) {
-            if self.warned.set(()).is_ok() {
-                eprintln!(
-                    "pomo: could not write session log {} ({}); further failures will be silent",
-                    path.display(),
-                    e
-                );
+        match append_entry(path, &entry) {
+            Ok(()) => true,
+            Err(e) => {
+                if self.warned.set(()).is_ok() {
+                    eprintln!(
+                        "pomo: could not write session log {} ({}); further failures will be silent",
+                        path.display(),
+                        e
+                    );
+                }
+                false
             }
         }
     }
