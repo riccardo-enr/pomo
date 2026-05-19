@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux:
+    name: build x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ALSA headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+
+      - name: Strip binary
+        run: strip target/x86_64-unknown-linux-gnu/release/pomo
+
+      - name: Rename for upload
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/pomo dist/pomo-x86_64-unknown-linux-gnu
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/pomo-x86_64-unknown-linux-gnu
+          generate_release_notes: true
+          fail_on_unmatched_files: true
