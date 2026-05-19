@@ -169,12 +169,32 @@ fn run_one(
     let outcome = tui::run(label, dur, kind, state_file)?;
     let ended = SystemTime::now();
     let completed = outcome == tui::Outcome::Finished;
-    journal.record(kind, label, started, ended, dur, completed);
+    let logged = journal.record(kind, label, started, ended, dur, completed);
     if completed {
         audio.play_bell();
         notifier.notify(label, kind);
+    } else {
+        let elapsed = ended.duration_since(started).unwrap_or(Duration::ZERO);
+        eprintln!("{}", abort_summary(label, elapsed, logged));
     }
     Ok(outcome)
+}
+
+fn abort_summary(label: &str, elapsed: Duration, logged: bool) -> String {
+    let suffix = if logged { " (logged)" } else { "" };
+    format!("aborted \"{}\" after {}{}", label, fmt_elapsed(elapsed), suffix)
+}
+
+fn fmt_elapsed(d: Duration) -> String {
+    let total = d.as_secs();
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{:02}:{:02}:{:02}", h, m, s)
+    } else {
+        format!("{:02}:{:02}", m, s)
+    }
 }
 
 /*
@@ -217,6 +237,34 @@ mod tests {
 
     fn d(s: u64) -> Duration {
         Duration::from_secs(s)
+    }
+
+    #[test]
+    fn fmt_elapsed_below_one_hour_is_mmss() {
+        assert_eq!(fmt_elapsed(d(0)), "00:00");
+        assert_eq!(fmt_elapsed(d(59)), "00:59");
+        assert_eq!(fmt_elapsed(d(60)), "01:00");
+        assert_eq!(fmt_elapsed(d(12 * 60 + 34)), "12:34");
+        assert_eq!(fmt_elapsed(d(59 * 60 + 59)), "59:59");
+    }
+
+    #[test]
+    fn fmt_elapsed_one_hour_and_above_is_hhmmss() {
+        assert_eq!(fmt_elapsed(d(3600)), "01:00:00");
+        assert_eq!(fmt_elapsed(d(3661)), "01:01:01");
+        assert_eq!(fmt_elapsed(d(2 * 3600 + 5 * 60 + 7)), "02:05:07");
+    }
+
+    #[test]
+    fn abort_summary_includes_label_elapsed_and_logged() {
+        let s = abort_summary("Work 2/4", d(12 * 60 + 34), true);
+        assert_eq!(s, "aborted \"Work 2/4\" after 12:34 (logged)");
+    }
+
+    #[test]
+    fn abort_summary_omits_logged_marker_on_journal_failure() {
+        let s = abort_summary("Timer", d(45), false);
+        assert_eq!(s, "aborted \"Timer\" after 00:45");
     }
 
     #[test]
