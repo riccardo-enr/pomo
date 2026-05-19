@@ -2,6 +2,7 @@ mod audio;
 mod config;
 mod journal;
 mod state;
+mod stats;
 mod tui;
 
 use anyhow::Result;
@@ -50,6 +51,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Summarize the append-only session log (all-time totals + last 7 days)
+    Stats,
 }
 
 fn parse_dur(s: &str) -> Result<Duration> {
@@ -75,6 +78,19 @@ fn main() -> Result<()> {
             println!("idle");
         } else {
             println!("{} ({})", out.text, out.tooltip);
+        }
+        return Ok(());
+    }
+
+    // stats also runs without loading config, audio, or session state.
+    if matches!(cli.cmd, Some(Cmd::Stats)) {
+        match stats::report_from_default() {
+            Ok(None) => print!("no sessions yet\n"),
+            Ok(Some(report)) => print!("{}", stats::render(&report)),
+            Err(e) => {
+                eprintln!("pomo: could not read session log: {}", e);
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }
@@ -133,7 +149,7 @@ fn main() -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("provide a duration, e.g. `pomo 25m`, or a subcommand"))?;
             run_one(&audio, &notifier, &journal, &mut state_file, "Timer", parse_dur(&dur)?, Kind::Timer)
         }
-        Some(Cmd::Status { .. }) => unreachable!("handled above"),
+        Some(Cmd::Status { .. }) | Some(Cmd::Stats) => unreachable!("handled above"),
     };
 
     // Give the detached bell time to drain before the audio device is torn down.

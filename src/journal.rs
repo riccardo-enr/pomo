@@ -115,7 +115,7 @@ fn format_rfc3339(t: SystemTime) -> String {
     humantime::format_rfc3339_seconds(t).to_string()
 }
 
-fn default_log_path() -> Option<PathBuf> {
+pub fn default_log_path() -> Option<PathBuf> {
     let strategy = choose_app_strategy(AppStrategyArgs {
         top_level_domain: String::new(),
         author: String::new(),
