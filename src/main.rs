@@ -1,3 +1,4 @@
+mod audio;
 mod tui;
 
 use anyhow::Result;
@@ -12,6 +13,10 @@ struct Cli {
 
     /// Free-form duration, e.g. 25m, 1h30m, 45s. Used when no subcommand is given.
     duration: Option<String>,
+
+    /// Suppress the audible bell on interval completion.
+    #[arg(long, global = true)]
+    no_sound: bool,
 }
 
 #[derive(Subcommand)]
@@ -53,30 +58,42 @@ fn parse_dur(s: &str) -> Result<Duration> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.cmd {
-        Some(Cmd::Work { duration }) => run_one("Work", parse_dur(&duration)?, Kind::Work),
-        Some(Cmd::Break { duration }) => run_one("Short break", parse_dur(&duration)?, Kind::Break),
-        Some(Cmd::Long { duration }) => run_one("Long break", parse_dur(&duration)?, Kind::Break),
-        Some(Cmd::Timer { duration }) => run_one("Timer", parse_dur(&duration)?, Kind::Timer),
+    let audio = audio::AudioCtx::new(!cli.no_sound);
+    let result = match cli.cmd {
+        Some(Cmd::Work { duration }) => run_one(&audio, "Work", parse_dur(&duration)?, Kind::Work),
+        Some(Cmd::Break { duration }) => run_one(&audio, "Short break", parse_dur(&duration)?, Kind::Break),
+        Some(Cmd::Long { duration }) => run_one(&audio, "Long break", parse_dur(&duration)?, Kind::Break),
+        Some(Cmd::Timer { duration }) => run_one(&audio, "Timer", parse_dur(&duration)?, Kind::Timer),
         Some(Cmd::Cycle { rounds, work, short, long }) => {
             let w = parse_dur(&work)?;
             let s = parse_dur(&short)?;
             let l = parse_dur(&long)?;
+            let mut out = Ok(());
             for r in 1..=rounds {
-                run_one(&format!("Work {}/{}", r, rounds), w, Kind::Work)?;
+                out = run_one(&audio, &format!("Work {}/{}", r, rounds), w, Kind::Work);
+                if out.is_err() {
+                    break;
+                }
                 if r < rounds {
-                    run_one("Short break", s, Kind::Break)?;
+                    out = run_one(&audio, "Short break", s, Kind::Break);
+                    if out.is_err() {
+                        break;
+                    }
                 }
             }
-            run_one("Long break", l, Kind::Break)
+            out.and_then(|_| run_one(&audio, "Long break", l, Kind::Break))
         }
         None => {
             let dur = cli
                 .duration
                 .ok_or_else(|| anyhow::anyhow!("provide a duration, e.g. `pomo 25m`, or a subcommand"))?;
-            run_one("Timer", parse_dur(&dur)?, Kind::Timer)
+            run_one(&audio, "Timer", parse_dur(&dur)?, Kind::Timer)
         }
-    }
+    };
+
+    // Give the detached bell time to drain before the audio device is torn down.
+    std::thread::sleep(Duration::from_millis(500));
+    result
 }
 
 #[derive(Clone, Copy)]
@@ -86,9 +103,10 @@ pub enum Kind {
     Timer,
 }
 
-fn run_one(label: &str, dur: Duration, kind: Kind) -> Result<()> {
+fn run_one(audio: &audio::AudioCtx, label: &str, dur: Duration, kind: Kind) -> Result<()> {
     let outcome = tui::run(label, dur, kind)?;
     if outcome == tui::Outcome::Finished {
+        audio.play_bell();
         notify(label, kind);
     }
     Ok(())

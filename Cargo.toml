@@ -10,3 +10,4 @@ crossterm = "0.29.0"
 humantime = "2.3.0"
 notify-rust = "4.17.0"
 ratatui = "0.30.0"
+rodio = { version = "0.22.2", default-features = false, features = ["wav", "playback"] }
