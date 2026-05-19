@@ -1,10 +1,11 @@
 mod audio;
 mod config;
+mod journal;
 mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[derive(Parser)]
 #[command(name = "pomo", about = "Pomodoro timer and generic countdowns", version)]
@@ -62,22 +63,23 @@ fn main() -> Result<()> {
     let sound_enabled = cfg.sound && !cli.no_sound;
     let audio = audio::AudioCtx::new(sound_enabled, cfg.sound_path.as_deref(), cfg.bell_volume);
     let notifier = Notifier { enabled: cfg.desktop_notification };
+    let journal = journal::Journal::new();
 
     let result = match cli.cmd {
         Some(Cmd::Work { duration }) => {
             let d = resolve_dur(duration, cfg.work)?;
-            run_one(&audio, &notifier, "Work", d, Kind::Work)
+            run_one(&audio, &notifier, &journal, "Work", d, Kind::Work)
         }
         Some(Cmd::Break { duration }) => {
             let d = resolve_dur(duration, cfg.short_break)?;
-            run_one(&audio, &notifier, "Short break", d, Kind::Break)
+            run_one(&audio, &notifier, &journal, "Short break", d, Kind::Break)
         }
         Some(Cmd::Long { duration }) => {
             let d = resolve_dur(duration, cfg.long_break)?;
-            run_one(&audio, &notifier, "Long break", d, Kind::Break)
+            run_one(&audio, &notifier, &journal, "Long break", d, Kind::Break)
         }
         Some(Cmd::Timer { duration }) => {
-            run_one(&audio, &notifier, "Timer", parse_dur(&duration)?, Kind::Timer)
+            run_one(&audio, &notifier, &journal, "Timer", parse_dur(&duration)?, Kind::Timer)
         }
         Some(Cmd::Cycle { rounds, work, short, long }) => {
             let n = rounds.unwrap_or(cfg.rounds);
@@ -86,24 +88,24 @@ fn main() -> Result<()> {
             let l = resolve_dur(long, cfg.long_break)?;
             let mut out = Ok(());
             for r in 1..=n {
-                out = run_one(&audio, &notifier, &format!("Work {}/{}", r, n), w, Kind::Work);
+                out = run_one(&audio, &notifier, &journal, &format!("Work {}/{}", r, n), w, Kind::Work);
                 if out.is_err() {
                     break;
                 }
                 if r < n {
-                    out = run_one(&audio, &notifier, "Short break", s, Kind::Break);
+                    out = run_one(&audio, &notifier, &journal, "Short break", s, Kind::Break);
                     if out.is_err() {
                         break;
                     }
                 }
             }
-            out.and_then(|_| run_one(&audio, &notifier, "Long break", l, Kind::Break))
+            out.and_then(|_| run_one(&audio, &notifier, &journal, "Long break", l, Kind::Break))
         }
         None => {
             let dur = cli
                 .duration
                 .ok_or_else(|| anyhow::anyhow!("provide a duration, e.g. `pomo 25m`, or a subcommand"))?;
-            run_one(&audio, &notifier, "Timer", parse_dur(&dur)?, Kind::Timer)
+            run_one(&audio, &notifier, &journal, "Timer", parse_dur(&dur)?, Kind::Timer)
         }
     };
 
@@ -144,12 +146,17 @@ impl Notifier {
 fn run_one(
     audio: &audio::AudioCtx,
     notifier: &Notifier,
+    journal: &journal::Journal,
     label: &str,
     dur: Duration,
     kind: Kind,
 ) -> Result<()> {
+    let started = SystemTime::now();
     let outcome = tui::run(label, dur, kind)?;
-    if outcome == tui::Outcome::Finished {
+    let ended = SystemTime::now();
+    let completed = outcome == tui::Outcome::Finished;
+    journal.record(kind, label, started, ended, dur, completed);
+    if completed {
         audio.play_bell();
         notifier.notify(label, kind);
     }
