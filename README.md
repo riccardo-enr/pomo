@@ -162,6 +162,14 @@ Add to your `~/.config/waybar/style.css`:
 }
 ```
 
+## Performance
+
+`bench/run.sh` builds the release binary and records cold-start timings for `pomo status --json` (the waybar hot path) plus the release binary size. It prefers `hyperfine` when available, falls back to a bash + nanosecond-`date` loop otherwise. The latest results live in `bench/baseline.md`; perf-focused PRs are expected to quote a before/after pair from that file.
+
+```bash
+bash bench/run.sh
+```
+
 ## Recording the demo
 
 The `assets/demo.gif` reference above is intentionally absent for v0.1. To record it:
