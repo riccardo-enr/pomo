@@ -1,6 +1,7 @@
 mod audio;
 mod config;
 mod journal;
+mod state;
 mod tui;
 
 use anyhow::Result;
@@ -43,6 +44,12 @@ enum Cmd {
     },
     /// Generic timer
     Timer { duration: String },
+    /// Emit the current pomo session state (use --json for waybar integration)
+    Status {
+        /// Emit waybar-compatible JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn parse_dur(s: &str) -> Result<Duration> {
@@ -58,55 +65,75 @@ fn resolve_dur(cli_value: Option<String>, config_value: Duration) -> Result<Dura
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // status runs without loading config, audio, or any other heavy setup.
+    if let Some(Cmd::Status { json }) = &cli.cmd {
+        let out = state::read_for_status();
+        if *json {
+            println!("{}", serde_json::to_string(&out).unwrap());
+        } else if out.class == "idle" {
+            println!("idle");
+        } else {
+            println!("{} ({})", out.text, out.tooltip);
+        }
+        return Ok(());
+    }
+
     let cfg = config::Config::load()?;
 
     let sound_enabled = cfg.sound && !cli.no_sound;
     let audio = audio::AudioCtx::new(sound_enabled, cfg.sound_path.as_deref(), cfg.bell_volume);
     let notifier = Notifier { enabled: cfg.desktop_notification };
     let journal = journal::Journal::new();
+    let mut state_file = state::StateFile::new();
 
     let result = match cli.cmd {
         Some(Cmd::Work { duration }) => {
             let d = resolve_dur(duration, cfg.work)?;
-            run_one(&audio, &notifier, &journal, "Work", d, Kind::Work)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Work", d, Kind::Work)
         }
         Some(Cmd::Break { duration }) => {
             let d = resolve_dur(duration, cfg.short_break)?;
-            run_one(&audio, &notifier, &journal, "Short break", d, Kind::Break)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Short break", d, Kind::Break)
         }
         Some(Cmd::Long { duration }) => {
             let d = resolve_dur(duration, cfg.long_break)?;
-            run_one(&audio, &notifier, &journal, "Long break", d, Kind::Break)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Long break", d, Kind::Break)
         }
         Some(Cmd::Timer { duration }) => {
-            run_one(&audio, &notifier, &journal, "Timer", parse_dur(&duration)?, Kind::Timer)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Timer", parse_dur(&duration)?, Kind::Timer)
         }
         Some(Cmd::Cycle { rounds, work, short, long }) => {
             let n = rounds.unwrap_or(cfg.rounds);
             let w = resolve_dur(work, cfg.work)?;
             let s = resolve_dur(short, cfg.short_break)?;
             let l = resolve_dur(long, cfg.long_break)?;
-            let mut out = Ok(());
+            let mut out: Result<()> = Ok(());
             for r in 1..=n {
-                out = run_one(&audio, &notifier, &journal, &format!("Work {}/{}", r, n), w, Kind::Work);
+                out = run_one(&audio, &notifier, &journal, &mut state_file, &format!("Work {}/{}", r, n), w, Kind::Work);
                 if out.is_err() {
                     break;
                 }
                 if r < n {
-                    out = run_one(&audio, &notifier, &journal, "Short break", s, Kind::Break);
+                    out = run_one(&audio, &notifier, &journal, &mut state_file, "Short break", s, Kind::Break);
                     if out.is_err() {
                         break;
                     }
                 }
             }
-            out.and_then(|_| run_one(&audio, &notifier, &journal, "Long break", l, Kind::Break))
+            if out.is_ok() {
+                run_one(&audio, &notifier, &journal, &mut state_file, "Long break", l, Kind::Break)
+            } else {
+                out
+            }
         }
         None => {
             let dur = cli
                 .duration
                 .ok_or_else(|| anyhow::anyhow!("provide a duration, e.g. `pomo 25m`, or a subcommand"))?;
-            run_one(&audio, &notifier, &journal, "Timer", parse_dur(&dur)?, Kind::Timer)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Timer", parse_dur(&dur)?, Kind::Timer)
         }
+        Some(Cmd::Status { .. }) => unreachable!("handled above"),
     };
 
     // Give the detached bell time to drain before the audio device is torn down.
@@ -147,12 +174,13 @@ fn run_one(
     audio: &audio::AudioCtx,
     notifier: &Notifier,
     journal: &journal::Journal,
+    state_file: &mut state::StateFile,
     label: &str,
     dur: Duration,
     kind: Kind,
 ) -> Result<()> {
     let started = SystemTime::now();
-    let outcome = tui::run(label, dur, kind)?;
+    let outcome = tui::run(label, dur, kind, state_file)?;
     let ended = SystemTime::now();
     let completed = outcome == tui::Outcome::Finished;
     journal.record(kind, label, started, ended, dur, completed);

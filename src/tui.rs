@@ -3,6 +3,7 @@
  * label, and a hint line. Space pauses, q/Esc quits early, r restarts.
  */
 
+use crate::state::StateFile;
 use crate::Kind;
 use anyhow::Result;
 use crossterm::{
@@ -28,9 +29,9 @@ pub enum Outcome {
     Aborted,
 }
 
-pub fn run(label: &str, total: Duration, kind: Kind) -> Result<Outcome> {
+pub fn run(label: &str, total: Duration, kind: Kind, state: &mut StateFile) -> Result<Outcome> {
     let mut term = setup()?;
-    let res = run_loop(&mut term, label, total, kind);
+    let res = run_loop(&mut term, label, total, kind, state);
     teardown(&mut term)?;
     res
 }
@@ -54,6 +55,7 @@ fn run_loop(
     label: &str,
     total: Duration,
     kind: Kind,
+    state: &mut StateFile,
 ) -> Result<Outcome> {
     let mut start = Instant::now();
     let mut paused_at: Option<Instant> = None;
@@ -73,6 +75,8 @@ fn run_loop(
         };
         let remaining = total.saturating_sub(elapsed);
         let ratio = (elapsed.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0);
+
+        state.write(label, kind, remaining, total, paused_at.is_some());
 
         term.draw(|f| {
             let area = f.area();
