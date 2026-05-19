@@ -68,6 +68,15 @@ impl RawConfig {
         } else {
             Some(PathBuf::from(self.sound_path))
         };
+        if self.bell_volume.is_nan() {
+            anyhow::bail!("invalid `bell_volume` value: NaN");
+        }
+        if !(0.0..=4.0).contains(&self.bell_volume) {
+            anyhow::bail!(
+                "invalid `bell_volume` value: {} (must be in 0.0..=4.0)",
+                self.bell_volume
+            );
+        }
         Ok(Config {
             work,
             short_break,
@@ -169,6 +178,39 @@ foo_bar = 3"#).unwrap_err();
         let err = parse(r#"work = "twenty minutes""#).unwrap_err();
         let msg = format!("{:#}", err);
         assert!(msg.contains("work"), "error should name the bad field: {}", msg);
+    }
+
+    #[test]
+    fn bell_volume_at_bounds_is_accepted() {
+        let c = parse(r#"bell_volume = 0.0"#).unwrap();
+        assert_eq!(c.bell_volume, 0.0);
+        let c = parse(r#"bell_volume = 4.0"#).unwrap();
+        assert_eq!(c.bell_volume, 4.0);
+        let c = parse(r#"bell_volume = 1.5"#).unwrap();
+        assert_eq!(c.bell_volume, 1.5);
+    }
+
+    #[test]
+    fn bell_volume_above_max_rejected() {
+        let err = parse(r#"bell_volume = 99.0"#).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("bell_volume"), "{}", msg);
+        assert!(msg.contains("99"), "{}", msg);
+    }
+
+    #[test]
+    fn bell_volume_negative_rejected() {
+        let err = parse(r#"bell_volume = -0.5"#).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("bell_volume"), "{}", msg);
+    }
+
+    #[test]
+    fn bell_volume_nan_rejected() {
+        let err = parse(r#"bell_volume = nan"#).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("bell_volume"), "{}", msg);
+        assert!(msg.to_lowercase().contains("nan"), "{}", msg);
     }
 
     #[test]
