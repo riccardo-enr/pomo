@@ -90,48 +90,34 @@ fn main() -> Result<()> {
     let result = match cli.cmd {
         Some(Cmd::Work { duration }) => {
             let d = resolve_dur(duration, cfg.work)?;
-            run_one(&audio, &notifier, &journal, &mut state_file, "Work", d, Kind::Work)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Work", d, Kind::Work).map(|_| ())
         }
         Some(Cmd::Break { duration }) => {
             let d = resolve_dur(duration, cfg.short_break)?;
-            run_one(&audio, &notifier, &journal, &mut state_file, "Short break", d, Kind::Break)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Short break", d, Kind::Break).map(|_| ())
         }
         Some(Cmd::Long { duration }) => {
             let d = resolve_dur(duration, cfg.long_break)?;
-            run_one(&audio, &notifier, &journal, &mut state_file, "Long break", d, Kind::Break)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Long break", d, Kind::Break).map(|_| ())
         }
         Some(Cmd::Timer { duration }) => {
-            run_one(&audio, &notifier, &journal, &mut state_file, "Timer", parse_dur(&duration)?, Kind::Timer)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Timer", parse_dur(&duration)?, Kind::Timer).map(|_| ())
         }
         Some(Cmd::Cycle { rounds, work, short, long }) => {
             let n = rounds.unwrap_or(cfg.rounds);
             let w = resolve_dur(work, cfg.work)?;
             let s = resolve_dur(short, cfg.short_break)?;
             let l = resolve_dur(long, cfg.long_break)?;
-            let mut out: Result<()> = Ok(());
-            for r in 1..=n {
-                out = run_one(&audio, &notifier, &journal, &mut state_file, &format!("Work {}/{}", r, n), w, Kind::Work);
-                if out.is_err() {
-                    break;
-                }
-                if r < n {
-                    out = run_one(&audio, &notifier, &journal, &mut state_file, "Short break", s, Kind::Break);
-                    if out.is_err() {
-                        break;
-                    }
-                }
-            }
-            if out.is_ok() {
-                run_one(&audio, &notifier, &journal, &mut state_file, "Long break", l, Kind::Break)
-            } else {
-                out
-            }
+            run_cycle(n, w, s, l, |label, dur, kind| {
+                run_one(&audio, &notifier, &journal, &mut state_file, label, dur, kind)
+            })
+            .map(|_| ())
         }
         None => {
             let dur = cli
                 .duration
                 .ok_or_else(|| anyhow::anyhow!("provide a duration, e.g. `pomo 25m`, or a subcommand"))?;
-            run_one(&audio, &notifier, &journal, &mut state_file, "Timer", parse_dur(&dur)?, Kind::Timer)
+            run_one(&audio, &notifier, &journal, &mut state_file, "Timer", parse_dur(&dur)?, Kind::Timer).map(|_| ())
         }
         Some(Cmd::Status { .. }) => unreachable!("handled above"),
     };
@@ -141,7 +127,7 @@ fn main() -> Result<()> {
     result
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Work,
     Break,
@@ -178,7 +164,7 @@ fn run_one(
     label: &str,
     dur: Duration,
     kind: Kind,
-) -> Result<()> {
+) -> Result<tui::Outcome> {
     let started = SystemTime::now();
     let outcome = tui::run(label, dur, kind, state_file)?;
     let ended = SystemTime::now();
@@ -188,5 +174,123 @@ fn run_one(
         audio.play_bell();
         notifier.notify(label, kind);
     }
-    Ok(())
+    Ok(outcome)
+}
+
+/*
+ * Pure pomodoro-cycle scheduler. Calls `runner` once per interval in the
+ * usual order (Work 1/N, Short break, Work 2/N, ..., Long break) and stops
+ * on the first `Outcome::Aborted`, including during the trailing long break.
+ *
+ * Kept free of audio/journal/TUI concerns so the abort-cancels-everything
+ * behavior can be unit-tested without a terminal.
+ */
+fn run_cycle<F>(
+    rounds: u32,
+    work: Duration,
+    short_break: Duration,
+    long_break: Duration,
+    mut runner: F,
+) -> Result<tui::Outcome>
+where
+    F: FnMut(&str, Duration, Kind) -> Result<tui::Outcome>,
+{
+    for r in 1..=rounds {
+        let out = runner(&format!("Work {}/{}", r, rounds), work, Kind::Work)?;
+        if out == tui::Outcome::Aborted {
+            return Ok(tui::Outcome::Aborted);
+        }
+        if r < rounds {
+            let out = runner("Short break", short_break, Kind::Break)?;
+            if out == tui::Outcome::Aborted {
+                return Ok(tui::Outcome::Aborted);
+            }
+        }
+    }
+    runner("Long break", long_break, Kind::Break)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::Outcome;
+
+    fn d(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    #[test]
+    fn full_cycle_runs_all_intervals_in_order() {
+        let mut calls: Vec<(String, Kind)> = Vec::new();
+        let result = run_cycle(2, d(25), d(5), d(15), |label, _, kind| {
+            calls.push((label.to_string(), kind));
+            Ok(Outcome::Finished)
+        })
+        .unwrap();
+        assert_eq!(result, Outcome::Finished);
+        assert_eq!(
+            calls,
+            vec![
+                ("Work 1/2".to_string(), Kind::Work),
+                ("Short break".to_string(), Kind::Break),
+                ("Work 2/2".to_string(), Kind::Work),
+                ("Long break".to_string(), Kind::Break),
+            ]
+        );
+    }
+
+    #[test]
+    fn abort_during_first_work_stops_cycle() {
+        let mut calls: Vec<String> = Vec::new();
+        let result = run_cycle(3, d(25), d(5), d(15), |label, _, _| {
+            calls.push(label.to_string());
+            Ok(Outcome::Aborted)
+        })
+        .unwrap();
+        assert_eq!(result, Outcome::Aborted);
+        assert_eq!(calls, vec!["Work 1/3"]);
+    }
+
+    #[test]
+    fn abort_during_short_break_stops_cycle() {
+        let mut calls: Vec<String> = Vec::new();
+        let result = run_cycle(3, d(25), d(5), d(15), |label, _, _| {
+            calls.push(label.to_string());
+            if label == "Short break" {
+                Ok(Outcome::Aborted)
+            } else {
+                Ok(Outcome::Finished)
+            }
+        })
+        .unwrap();
+        assert_eq!(result, Outcome::Aborted);
+        assert_eq!(calls, vec!["Work 1/3", "Short break"]);
+    }
+
+    #[test]
+    fn abort_during_long_break_returns_aborted() {
+        let mut calls: Vec<String> = Vec::new();
+        let result = run_cycle(1, d(25), d(5), d(15), |label, _, _| {
+            calls.push(label.to_string());
+            if label == "Long break" {
+                Ok(Outcome::Aborted)
+            } else {
+                Ok(Outcome::Finished)
+            }
+        })
+        .unwrap();
+        assert_eq!(result, Outcome::Aborted);
+        assert_eq!(calls, vec!["Work 1/1", "Long break"]);
+    }
+
+    #[test]
+    fn single_round_skips_short_break() {
+        let mut calls: Vec<String> = Vec::new();
+        let _ = run_cycle(1, d(25), d(5), d(15), |label, _, _| {
+            calls.push(label.to_string());
+            Ok(Outcome::Finished)
+        })
+        .unwrap();
+        assert_eq!(calls, vec!["Work 1/1", "Long break"]);
+    }
 }

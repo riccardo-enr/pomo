@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Finished,
     Aborted,
