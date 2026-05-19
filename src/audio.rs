@@ -44,6 +44,11 @@ impl AudioCtx {
             }
         });
 
+        debug_assert!(
+            (0.0..=4.0).contains(&volume),
+            "bell_volume should be validated at config load; got {}",
+            volume
+        );
         match DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {
                 sink.log_on_drop(false);
@@ -51,7 +56,7 @@ impl AudioCtx {
                     sink: Some(sink),
                     bell_bytes: BUNDLED_BELL,
                     user_bell,
-                    volume: volume.clamp(0.0, 4.0),
+                    volume,
                 }
             }
             Err(e) => {
