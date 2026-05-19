@@ -4,21 +4,7 @@ A pomodoro timer and generic countdown CLI with a `ratatui` TUI, desktop
 notifications, audible bell, append-only session log, and a `--json` status
 subcommand for waybar.
 
-```
-Work 1/4
-
-   ##  ##     ###
-  #  ##  #   #   #
-    ##       #   #
-   ##        #   #
-  ######      ###
-
-[========================               ]  60%
-
-  [space] pause/resume   [r] restart   [q/esc] quit
-```
-
-*(A real GIF will replace this ASCII block at `assets/demo.gif`. See [Recording the demo](#recording-the-demo) below.)*
+![demo](assets/demo.gif)
 
 ## Install
 
